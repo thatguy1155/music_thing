@@ -1,0 +1,1240 @@
+<!doctype html>
+<!--
+  grid-conductor.html — drumming as conductor of a polyphonic step sequencer.
+  Inputs: mic'd drums (any audio input), Alesis 25-key (tonic + voice select + voice volume + tap tempo).
+  Output: pad LEDs lit via MIDI Note On back to the Alesis.
+  How to play: open in Chrome → pick devices → tap CC64 for tempo → press a key in C3-C4
+  to start the song on that tonic. Drum hits fire actions on a (freq, dB) grid that
+  mutate the selected voice (or globally for scale + structural).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grid Conductor</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@400;500&display=swap');
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#faf8f3;color:#2a2724;font-family:'DM Mono',monospace;font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+body{padding:2.5rem 1rem 4rem;display:flex;justify-content:center}
+main{width:100%;max-width:880px;display:flex;flex-direction:column;gap:1.5rem}
+
+h1{font-family:'Playfair Display',serif;font-weight:400;font-size:20px;letter-spacing:0.2em;color:#2a2724;text-align:center}
+.tagline{font-size:11px;letter-spacing:0.18em;color:#9a9590;text-align:center;margin-top:-0.25rem}
+
+.section-title{font-size:10px;letter-spacing:0.16em;color:#9a9590;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:0.5px solid #ece7e0;margin-bottom:0.5rem}
+
+.row{display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem}
+.row label{font-size:11px;color:#807a72;letter-spacing:0.06em;min-width:88px}
+
+select,input[type=text]{font-family:'DM Mono',monospace;font-size:12px;font-weight:300;color:#2a2724;background:#fff;border:0.5px solid #d8d3cb;border-radius:6px;padding:8px 10px;outline:none;flex:1;letter-spacing:0.02em}
+select:focus,input[type=text]:focus{border-color:#807a72}
+
+.controls{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:0.25rem 0}
+button{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:0.1em;cursor:pointer;border-radius:6px;padding:9px 18px;border:0.5px solid #d8d3cb;background:transparent;color:#2a2724;transition:background 0.15s,opacity 0.15s,border-color 0.15s,transform 0.05s}
+button:hover:not(:disabled){background:#fff;border-color:#807a72}
+button:active:not(:disabled){transform:scale(0.97)}
+button.primary{background:#2a2724;border-color:#2a2724;color:#faf8f3}
+button.primary:hover:not(:disabled){background:#1a1714;border-color:#1a1714}
+button:disabled{opacity:0.3;cursor:default}
+
+.status{font-size:10px;letter-spacing:0.12em;color:#9a9590;text-align:center;min-height:14px;text-transform:uppercase}
+.status.error{color:#c44}
+.status.active{color:#1d9e75}
+
+.panel{background:#fff;border:0.5px solid #ece7e0;border-radius:8px;padding:1rem 1.1rem}
+
+.ls-grid{display:grid;grid-template-columns:repeat(7,auto);gap:0.4rem 1.4rem;align-items:baseline;justify-content:start}
+.ls-label{font-size:10px;letter-spacing:0.1em;color:#9a9590;text-transform:uppercase}
+.ls-value{font-size:14px;color:#2a2724;font-weight:500}
+.ls-value.accent{color:#1d9e75}
+
+.voice-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:0.6rem}
+.voice-card{background:#fff;border:0.5px solid #ece7e0;border-radius:8px;padding:0.7rem 0.8rem;display:flex;flex-direction:column;gap:0.35rem;transition:border-color 0.15s,opacity 0.15s}
+.voice-card.inactive{opacity:0.35}
+.voice-card.selected{border-color:#1d9e75;border-width:1px}
+.vc-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10px;letter-spacing:0.1em;color:#9a9590;text-transform:uppercase}
+.vc-pad{color:#807a72}
+.vc-pad.lit{color:#1d9e75;font-weight:500}
+.vc-pattern{display:grid;grid-template-columns:repeat(16,1fr);gap:1px;height:14px}
+.vc-step{background:#ece7e0;border-radius:1px}
+.vc-step.on{background:#2a2724}
+.vc-step.cursor{outline:1px solid #1d9e75;outline-offset:1px}
+.vc-info{display:flex;gap:0.7rem;font-size:11px;color:#807a72}
+.vc-info span b{color:#2a2724;font-weight:500}
+.vc-vol{height:3px;background:#ece7e0;border-radius:2px;overflow:hidden}
+.vc-vol-fill{height:100%;background:#1d9e75;transition:width 0.05s}
+
+.grid-wrap{background:#fff;border:0.5px solid #ece7e0;border-radius:8px;padding:0.6rem;display:flex;flex-direction:column;gap:0.4rem}
+#grid-canvas{width:100%;height:380px;display:block;border-radius:4px}
+.grid-legend{display:flex;justify-content:space-between;font-size:10px;letter-spacing:0.08em;color:#9a9590;text-transform:uppercase;padding:0 0.2rem}
+
+.unsupported{background:#fff8eb;border:0.5px solid #e8c97a;border-radius:8px;padding:1.1rem;font-size:12px;color:#7a5a13;line-height:1.6}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>GRID CONDUCTOR</h1>
+    <p class="tagline">drum hits · grid zones · live song</p>
+  </header>
+
+  <div id="unsupported" class="unsupported" style="display:none">
+    Your browser doesn't support the Web MIDI API. Please open this file in Chrome, Edge, Brave, or Opera.
+  </div>
+
+  <div id="app" style="display:flex;flex-direction:column;gap:1.5rem">
+
+    <section>
+      <div class="section-title">setup</div>
+      <div class="row">
+        <label for="audio-select">audio in</label>
+        <select id="audio-select"><option>—</option></select>
+      </div>
+      <div class="row">
+        <label for="midi-in-select">midi in</label>
+        <select id="midi-in-select"><option>—</option></select>
+      </div>
+      <div class="row">
+        <label for="midi-out-select">midi out</label>
+        <select id="midi-out-select"><option>—</option></select>
+      </div>
+      <div class="controls">
+        <button class="primary" id="btn-start">start</button>
+        <button id="btn-stop" disabled>stop</button>
+      </div>
+      <p id="status" class="status">ready</p>
+    </section>
+
+    <section>
+      <div class="section-title">live state</div>
+      <div class="panel">
+        <div class="ls-grid">
+          <div>
+            <div class="ls-label">tonic</div>
+            <div class="ls-value" id="ls-tonic">—</div>
+          </div>
+          <div>
+            <div class="ls-label">bpm</div>
+            <div class="ls-value" id="ls-bpm">—</div>
+          </div>
+          <div>
+            <div class="ls-label">scale</div>
+            <div class="ls-value" id="ls-scale">ionian</div>
+          </div>
+          <div>
+            <div class="ls-label">voices</div>
+            <div class="ls-value" id="ls-voices">0</div>
+          </div>
+          <div>
+            <div class="ls-label">measures</div>
+            <div class="ls-value" id="ls-measures">0</div>
+          </div>
+          <div>
+            <div class="ls-label">step</div>
+            <div class="ls-value" id="ls-step">—</div>
+          </div>
+          <div>
+            <div class="ls-label">selected</div>
+            <div class="ls-value accent" id="ls-selected">—</div>
+          </div>
+          <div>
+            <div class="ls-label">last midi</div>
+            <div class="ls-value" id="ls-last-midi">—</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title">voices</div>
+      <div class="voice-strip" id="voice-strip"></div>
+    </section>
+
+    <section>
+      <div class="section-title">action grid · drum hits land here</div>
+      <div class="grid-wrap">
+        <canvas id="grid-canvas"></canvas>
+        <div class="grid-legend">
+          <span>30 hz</span>
+          <span>120</span>
+          <span>400</span>
+          <span>1.5k</span>
+          <span>5k</span>
+          <span>15k hz</span>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+'use strict';
+
+// =========================================================================
+// Music theory helpers (from CLAUDE.md)
+// =========================================================================
+const SCALES = {
+  ionian:          [0, 2, 4, 5, 7, 9, 11],
+  dorian:          [0, 2, 3, 5, 7, 9, 10],
+  phrygian:        [0, 1, 3, 5, 7, 8, 10],
+  lydian:          [0, 2, 4, 6, 7, 9, 11],
+  mixolydian:      [0, 2, 4, 5, 7, 9, 10],
+  aeolian:         [0, 2, 3, 5, 7, 8, 10],
+  locrian:         [0, 1, 3, 5, 6, 8, 10],
+  pentatonicMajor: [0, 2, 4, 7, 9],
+  pentatonicMinor: [0, 3, 5, 7, 10],
+  blues:           [0, 3, 5, 6, 7, 10]
+};
+const SCALE_NAMES = Object.keys(SCALES);
+const PC = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const midiToFreq = m => 440 * Math.pow(2, (m - 69) / 12);
+const midiToNoteName = m => PC[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+
+function noteInScale(tonic, scale, degree) {
+  const intervals = SCALES[scale];
+  const len = intervals.length;
+  const oct = Math.floor(degree / len);
+  const idx = ((degree % len) + len) % len;
+  return tonic + intervals[idx] + 12 * oct;
+}
+
+// =========================================================================
+// Constants
+// =========================================================================
+const FREQ_BOUNDS = [30, 120, 400, 1500, 5000, 15000];
+const LOG_MIN = Math.log10(FREQ_BOUNDS[0]);
+const LOG_MAX = Math.log10(FREQ_BOUNDS[FREQ_BOUNDS.length - 1]);
+const DB_RANGE = 60; // hits register from 0..60 dB above loudness baseline
+
+const PAD_NOTES = [36, 38, 42, 46];
+const VOLUME_CCS = [14, 15, 16, 17];
+const TAP_CC = 64;
+const TONIC_LO = 48, TONIC_HI = 60;
+
+const WAVEFORMS = ['sine', 'triangle', 'sawtooth', 'square', 'pulse'];
+const CUTOFF_STEPS = [180, 400, 900, 2000, 4500, 10000]; // Hz
+const Q_STEPS      = [0.3, 0.6, 1.2, 2.5, 5.0, 10];
+const A_STEPS      = [0.002, 0.01, 0.04, 0.12, 0.4, 1.2];   // seconds
+const D_STEPS      = [0.04, 0.12, 0.3, 0.6, 1.2, 2.5];
+const R_STEPS      = [0.05, 0.15, 0.4, 1.0, 2.0, 4.0];
+const SEND_STEPS   = [0, 0.15, 0.3, 0.5, 0.7, 1.0];
+const OCTAVE_STEPS = [2, 3, 4, 5, 6]; // capped — anything above C6 gets ear-piercing fast
+const MAX_VOICES = 4;
+const MAX_MEASURES = 8;
+const MAX_STACK = 5;
+const STEPS_PER_MEASURE = 16;
+
+const LS_AUDIO = 'grid-conductor:lastAudioId';
+const LS_MIDI_IN = 'grid-conductor:lastMidiInId';
+const LS_MIDI_OUT = 'grid-conductor:lastMidiOutId';
+
+// =========================================================================
+// State
+// =========================================================================
+const state = {
+  tonic: 60,
+  bpm: 120,
+  scale: 'ionian',
+  measures: 1,
+  voices: [],
+  selectedVoiceIndex: 0,
+  cursor: 0,
+  started: false,
+  hit: null,
+  taps: [],
+  knobBuffer: [1, 1, 1, 1],
+  onsetState: { ema: -120, loudness: -90 },
+  running: false
+};
+
+function initialPattern(measures = 1) {
+  const arr = new Array(measures * STEPS_PER_MEASURE).fill(false);
+  for (let i = 0; i < STEPS_PER_MEASURE; i += 2) arr[i] = true; // 8th notes in measure 0
+  return arr;
+}
+
+function makeVoice() {
+  return {
+    degree: 0,
+    octave: 4,
+    pattern: initialPattern(state.measures),
+    stack: ['sine'],
+    filter: { cutoff: 2000, q: 0.6 },
+    env: { a: 0.002, d: 0.12, r: 0.4 },
+    send: { delay: 0, reverb: 0 },
+    masterGain: null,
+    delaySendGain: null,
+    reverbSendGain: null
+  };
+}
+
+function selectedVoice() {
+  return state.voices[state.selectedVoiceIndex] || null;
+}
+
+function ensurePatternSize(v, measures) {
+  const target = measures * STEPS_PER_MEASURE;
+  if (v.pattern.length < target) {
+    while (v.pattern.length < target) v.pattern.push(false);
+  } else if (v.pattern.length > target) {
+    v.pattern.length = target;
+  }
+}
+
+// =========================================================================
+// Audio setup
+// =========================================================================
+let audio = null; // { ctx, source, fast, slow, masterBus, delay, reverb, stream }
+
+async function openAudio(deviceId) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const constraints = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+  if (deviceId) constraints.deviceId = { exact: deviceId };
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+  const source = ctx.createMediaStreamSource(stream);
+
+  const fast = ctx.createAnalyser();
+  fast.fftSize = 512;
+  fast.smoothingTimeConstant = 0;
+  fast.minDecibels = -120;
+  fast.maxDecibels = 0;
+
+  const slow = ctx.createAnalyser();
+  slow.fftSize = 2048;
+  slow.smoothingTimeConstant = 0.2;
+  slow.minDecibels = -120;
+  slow.maxDecibels = 0;
+
+  source.connect(fast);
+  source.connect(slow);
+
+  // Synthesis bus (separate from analysis chain — do NOT loop mic back).
+  const masterBus = ctx.createGain();
+  masterBus.gain.value = 0.85;
+
+  // Shared delay (dotted-eighth at current BPM).
+  const delay = ctx.createDelay(2.0);
+  delay.delayTime.value = 60 / state.bpm * 0.75;
+  const delayFb = ctx.createGain();
+  delayFb.gain.value = 0.35;
+  const delayWet = ctx.createGain();
+  delayWet.gain.value = 0.9;
+  delay.connect(delayFb);
+  delayFb.connect(delay);
+  delay.connect(delayWet);
+  delayWet.connect(masterBus);
+
+  // Shared reverb.
+  const reverb = ctx.createConvolver();
+  reverb.buffer = makeImpulse(ctx, 1.4, 2.5);
+  const reverbWet = ctx.createGain();
+  reverbWet.gain.value = 0.7;
+  reverb.connect(reverbWet);
+  reverbWet.connect(masterBus);
+
+  masterBus.connect(ctx.destination);
+
+  audio = { ctx, source, fast, slow, masterBus, delay, delayFb, reverb, stream };
+  return audio;
+}
+
+// Swap the mic input on a running audio graph — keeps the synth chain intact.
+async function switchAudioInput(deviceId) {
+  if (!audio) return;
+  const constraints = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+  if (deviceId) constraints.deviceId = { exact: deviceId };
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+  try { audio.source.disconnect(); } catch (e) {}
+  audio.stream.getTracks().forEach(t => t.stop());
+  const source = audio.ctx.createMediaStreamSource(stream);
+  source.connect(audio.fast);
+  source.connect(audio.slow);
+  audio.source = source;
+  audio.stream = stream;
+}
+
+function makeImpulse(ctx, duration, decay) {
+  const rate = ctx.sampleRate;
+  const len = Math.floor(rate * duration);
+  const buf = ctx.createBuffer(2, len, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+  }
+  return buf;
+}
+
+function makePulseWave(ctx, duty = 0.25) {
+  const N = 32;
+  const real = new Float32Array(N);
+  const imag = new Float32Array(N);
+  for (let k = 1; k < N; k++) {
+    imag[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty);
+  }
+  return ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+}
+let pulseWave = null;
+
+function closeAudio() {
+  if (!audio) return;
+  try { audio.stream.getTracks().forEach(t => t.stop()); } catch {}
+  try { audio.ctx.close(); } catch {}
+  audio = null;
+}
+
+// =========================================================================
+// MIDI setup
+// =========================================================================
+let midiAccess = null;
+let midiIn = null;
+let midiOut = null;
+
+async function openMidi() {
+  if (!navigator.requestMIDIAccess) throw new Error('Web MIDI not supported');
+  midiAccess = await navigator.requestMIDIAccess({ sysex: false });
+  populateMidiSelects();
+  midiAccess.onstatechange = populateMidiSelects;
+}
+
+function populateMidiSelects() {
+  if (!midiAccess) return;
+  const ins = [...midiAccess.inputs.values()];
+  const outs = [...midiAccess.outputs.values()];
+  const inSel = $('midi-in-select');
+  const outSel = $('midi-out-select');
+  fillSelect(inSel, ins, localStorage.getItem(LS_MIDI_IN));
+  fillSelect(outSel, outs, localStorage.getItem(LS_MIDI_OUT));
+  // Auto-pick "Alesis" matches if no stored selection.
+  // Prefer the hardware port (e.g. "VMini Out") over virtual editor ports ("VMini EDITOR Out").
+  const pickAlesis = ports => ports.find(p => /alesis/i.test(p.name) && !/editor/i.test(p.name))
+                            || ports.find(p => /alesis/i.test(p.name));
+  if (!inSel.value || inSel.value === '—') {
+    const a = pickAlesis(ins);
+    if (a) inSel.value = a.id;
+  }
+  if (!outSel.value || outSel.value === '—') {
+    const a = pickAlesis(outs);
+    if (a) outSel.value = a.id;
+  }
+  attachMidiIn(inSel.value);
+  attachMidiOut(outSel.value);
+}
+
+function fillSelect(sel, ports, preferId) {
+  const cur = sel.value;
+  sel.innerHTML = '';
+  const dash = document.createElement('option');
+  dash.value = ''; dash.textContent = '—';
+  sel.appendChild(dash);
+  for (const p of ports) {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.name + (p.manufacturer ? ' · ' + p.manufacturer : '');
+    sel.appendChild(o);
+  }
+  if (preferId && ports.find(p => p.id === preferId)) sel.value = preferId;
+  else if (cur && ports.find(p => p.id === cur)) sel.value = cur;
+}
+
+function attachMidiIn(id) {
+  if (midiIn) midiIn.onmidimessage = null;
+  midiIn = id ? midiAccess.inputs.get(id) : null;
+  if (midiIn) midiIn.onmidimessage = onMidiMessage;
+}
+
+function attachMidiOut(id) {
+  midiOut = id ? midiAccess.outputs.get(id) : null;
+  // Reset pad LEDs.
+  if (midiOut) {
+    for (const n of PAD_NOTES) midiOut.send([0x80, n, 0]);
+    if (state.voices.length > 0) {
+      midiOut.send([0x90, PAD_NOTES[state.selectedVoiceIndex], 127]);
+    }
+  }
+}
+
+function onMidiMessage(ev) {
+  const [status, d1, d2] = ev.data;
+  const cmd = status & 0xf0;
+  const ch = (status & 0x0f) + 1;
+  if (cmd === 0x90 && d2 > 0) {
+    setLastMidi('note ' + d1 + ' (' + midiToNoteName(d1) + ') vel ' + d2 + ' ch' + ch);
+    onNoteOn(d1, d2);
+  } else if (cmd === 0xb0) {
+    setLastMidi('cc ' + d1 + ' val ' + d2 + ' ch' + ch);
+    onCC(d1, d2);
+  }
+}
+
+function setLastMidi(text) {
+  const el = document.getElementById('ls-last-midi');
+  if (el) el.textContent = text;
+}
+
+function onNoteOn(note, vel) {
+  if (PAD_NOTES.includes(note)) {
+    const idx = PAD_NOTES.indexOf(note);
+    if (idx < state.voices.length) selectVoice(idx);
+    return;
+  }
+  if (note >= TONIC_LO && note <= TONIC_HI) {
+    state.tonic = note;
+    if (!state.started) startSong();
+    renderUI();
+  }
+}
+
+function onCC(num, val) {
+  const idx = VOLUME_CCS.indexOf(num);
+  if (idx >= 0) {
+    const gain = val / 127;
+    state.knobBuffer[idx] = gain;
+    const v = state.voices[idx];
+    if (v && v.masterGain && audio) {
+      v.masterGain.gain.linearRampToValueAtTime(gain, audio.ctx.currentTime + 0.02);
+    }
+    renderVoiceCards();
+    return;
+  }
+  if (num === TAP_CC && val === 127) {
+    recordTap(performance.now() / 1000);
+  }
+}
+
+function selectVoice(idx) {
+  if (idx === state.selectedVoiceIndex) return;
+  if (midiOut) {
+    midiOut.send([0x80, PAD_NOTES[state.selectedVoiceIndex], 0]);
+    midiOut.send([0x90, PAD_NOTES[idx], 127]);
+  }
+  state.selectedVoiceIndex = idx;
+  renderUI();
+}
+
+function recordTap(t) {
+  state.taps.push(t);
+  if (state.taps.length > 4) state.taps.shift();
+  if (state.taps.length < 2) return;
+  const intervals = [];
+  for (let i = 1; i < state.taps.length; i++) intervals.push(state.taps[i] - state.taps[i - 1]);
+  // Drop intervals > 2s — likely a re-tap after a long pause.
+  const valid = intervals.filter(x => x > 0.2 && x < 2.0);
+  if (valid.length === 0) return;
+  const avg = valid.reduce((a, b) => a + b, 0) / valid.length;
+  const bpm = 60 / avg;
+  if (bpm >= 30 && bpm <= 300) {
+    state.bpm = bpm;
+    if (audio) audio.delay.delayTime.linearRampToValueAtTime(60 / state.bpm * 0.75, audio.ctx.currentTime + 0.05);
+    renderUI();
+  }
+}
+
+// =========================================================================
+// Synth (per-trigger)
+// =========================================================================
+function ensureVoiceNodes(v) {
+  if (!audio || v.masterGain) return;
+  v.masterGain = audio.ctx.createGain();
+  v.masterGain.gain.value = state.knobBuffer[state.voices.indexOf(v)] ?? 1;
+  v.delaySendGain = audio.ctx.createGain();
+  v.delaySendGain.gain.value = v.send.delay;
+  v.reverbSendGain = audio.ctx.createGain();
+  v.reverbSendGain.gain.value = v.send.reverb;
+  v.masterGain.connect(audio.masterBus);
+  v.masterGain.connect(v.delaySendGain);
+  v.delaySendGain.connect(audio.delay);
+  v.masterGain.connect(v.reverbSendGain);
+  v.reverbSendGain.connect(audio.reverb);
+}
+
+function teardownVoiceNodes(v) {
+  try { v.masterGain && v.masterGain.disconnect(); } catch {}
+  try { v.delaySendGain && v.delaySendGain.disconnect(); } catch {}
+  try { v.reverbSendGain && v.reverbSendGain.disconnect(); } catch {}
+  v.masterGain = v.delaySendGain = v.reverbSendGain = null;
+}
+
+function triggerVoice(v, atTime) {
+  if (!audio || !v.masterGain) return;
+  if (v.stack.length === 0) return;
+  const ctx = audio.ctx;
+  const midi = (v.octave + 1) * 12 + (noteInScale(state.tonic, state.scale, v.degree) % 12);
+  const fund = midiToFreq(midi);
+
+  const mixer = ctx.createGain();
+  mixer.gain.value = 1;
+
+  for (let i = 0; i < v.stack.length; i++) {
+    const wave = v.stack[i];
+    const osc = ctx.createOscillator();
+    if (wave === 'pulse') {
+      if (!pulseWave) pulseWave = makePulseWave(ctx, 0.25);
+      osc.setPeriodicWave(pulseWave);
+    } else {
+      osc.type = wave;
+    }
+    osc.frequency.value = fund * (i + 1);
+    const oscGain = ctx.createGain();
+    oscGain.gain.value = Math.pow(0.5, i);
+    osc.connect(oscGain);
+    oscGain.connect(mixer);
+    osc.start(atTime);
+    osc.stop(atTime + v.env.a + v.env.d + v.env.r + 0.05);
+  }
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = v.filter.cutoff;
+  filter.Q.value = v.filter.q;
+  mixer.connect(filter);
+
+  const amp = ctx.createGain();
+  const peak = 0.6;
+  amp.gain.setValueAtTime(0, atTime);
+  amp.gain.linearRampToValueAtTime(peak, atTime + v.env.a);
+  amp.gain.linearRampToValueAtTime(peak * 0.6, atTime + v.env.a + v.env.d);
+  amp.gain.linearRampToValueAtTime(0, atTime + v.env.a + v.env.d + v.env.r);
+  filter.connect(amp);
+  amp.connect(v.masterGain);
+
+  // Cleanup
+  setTimeout(() => {
+    try { mixer.disconnect(); filter.disconnect(); amp.disconnect(); } catch {}
+  }, (v.env.a + v.env.d + v.env.r + 0.1) * 1000);
+}
+
+// =========================================================================
+// Sequencer (lookahead scheduler)
+// =========================================================================
+let nextStepTime = 0;
+let schedulerInterval = null;
+const SCHEDULE_AHEAD = 0.1;
+const LOOKAHEAD_MS = 25;
+
+function startSong() {
+  if (state.voices.length === 0) {
+    state.voices.push(makeVoice());
+    if (audio) ensureVoiceNodes(state.voices[0]);
+  }
+  state.started = true;
+  state.cursor = 0;
+  if (audio) {
+    nextStepTime = audio.ctx.currentTime + 0.05;
+  }
+  if (midiOut) {
+    midiOut.send([0x90, PAD_NOTES[state.selectedVoiceIndex], 127]);
+  }
+  renderUI();
+}
+
+function stepInterval() {
+  return 60 / state.bpm / 4;
+}
+
+function schedulerTick() {
+  if (!audio || !state.started) return;
+  const now = audio.ctx.currentTime;
+  while (nextStepTime < now + SCHEDULE_AHEAD) {
+    const total = state.measures * STEPS_PER_MEASURE;
+    const c = state.cursor;
+    for (const v of state.voices) {
+      if (v.pattern[c]) triggerVoice(v, nextStepTime);
+    }
+    state.cursor = (c + 1) % total;
+    nextStepTime += stepInterval();
+  }
+}
+
+function startScheduler() {
+  if (schedulerInterval) clearInterval(schedulerInterval);
+  schedulerInterval = setInterval(schedulerTick, LOOKAHEAD_MS);
+}
+
+function stopScheduler() {
+  if (schedulerInterval) clearInterval(schedulerInterval);
+  schedulerInterval = null;
+}
+
+// =========================================================================
+// Audio analysis loop (onset detection → action dispatch)
+// =========================================================================
+let analysisRaf = null;
+let fastBuf = null;
+let slowBuf = null;
+
+function analysisTick() {
+  if (!audio) return;
+  if (!fastBuf || fastBuf.length !== audio.fast.frequencyBinCount) fastBuf = new Float32Array(audio.fast.frequencyBinCount);
+  if (!slowBuf || slowBuf.length !== audio.slow.frequencyBinCount) slowBuf = new Float32Array(audio.slow.frequencyBinCount);
+  audio.fast.getFloatFrequencyData(fastBuf);
+
+  // EMA / onset detection on the fast spectrum.
+  let sum = 0, n = 0;
+  for (let i = 1; i < fastBuf.length; i++) {
+    if (fastBuf[i] > -Infinity) { sum += fastBuf[i]; n++; }
+  }
+  const energy = n ? sum / n : -120;
+  const threshold = 6;
+  const alpha = 0.1;
+  const isOnset = (energy - state.onsetState.ema) > threshold;
+  // Onset-detection EMA: paused during onsets so the baseline tracks noise floor, not the hit.
+  if (!isOnset) state.onsetState.ema = state.onsetState.ema * (1 - alpha) + energy * alpha;
+  // Loudness EMA: always updating, slow, tracks recent average playing level.
+  // The y-axis baseline — keeps quiet hits from saturating once you've been playing for a beat.
+  const loudAlpha = 0.02;
+  state.onsetState.loudness = state.onsetState.loudness * (1 - loudAlpha) + energy * loudAlpha;
+
+  if (isOnset) {
+    audio.slow.getFloatFrequencyData(slowBuf);
+    // Hierarchical band detection: pick the band with the highest mean linear energy,
+    // then compute the centroid WITHIN that band. This way a kick's beater click can't
+    // drag the hit out of the kick band, but x still varies within the band so within-band
+    // cells (e.g. mode cells across band 2) remain selectable.
+    const sr = audio.ctx.sampleRate;
+    const fft = audio.slow.fftSize;
+    let bestBand = 0, bestBandEnergy = -Infinity;
+    for (let b = 0; b < FREQ_BOUNDS.length - 1; b++) {
+      const blo = Math.max(1, Math.round(FREQ_BOUNDS[b] * fft / sr));
+      const bhi = Math.min(slowBuf.length - 1, Math.round(FREQ_BOUNDS[b + 1] * fft / sr));
+      let sumMag = 0, cnt = 0;
+      for (let i = blo; i <= bhi; i++) {
+        const dB = slowBuf[i];
+        if (dB > -Infinity && dB > -80) { sumMag += Math.pow(10, dB / 20); cnt++; }
+      }
+      const meanMag = cnt ? sumMag / cnt : 0;
+      if (meanMag > bestBandEnergy) { bestBandEnergy = meanMag; bestBand = b; }
+    }
+    const blo = Math.max(1, Math.round(FREQ_BOUNDS[bestBand] * fft / sr));
+    const bhi = Math.min(slowBuf.length - 1, Math.round(FREQ_BOUNDS[bestBand + 1] * fft / sr));
+    let weightedSum = 0, magSum = 0;
+    for (let i = blo; i <= bhi; i++) {
+      const dB = slowBuf[i];
+      if (dB > -Infinity && dB > -80) {
+        const mag = Math.pow(10, dB / 20);
+        const f = i * sr / fft;
+        weightedSum += f * mag;
+        magSum += mag;
+      }
+    }
+    const bandCenter = Math.sqrt(FREQ_BOUNDS[bestBand] * FREQ_BOUNDS[bestBand + 1]);
+    const freq = magSum > 0 ? weightedSum / magSum : bandCenter;
+    const dBOver = Math.min(DB_RANGE, Math.max(0, energy - state.onsetState.loudness));
+    onHit(freq, dBOver);
+  }
+
+  analysisRaf = requestAnimationFrame(analysisTick);
+}
+
+function onHit(freqHz, dB) {
+  state.hit = { freqHz, dB, t: performance.now() };
+  if (!state.started) return; // ignore drum hits until song starts
+  const zone = findZone(freqHz, dB);
+  if (zone) dispatchAction(zone.action);
+}
+
+// =========================================================================
+// Grid: recompute zones from state, lookup by (freq, dB)
+// =========================================================================
+let zones = [];
+
+function freqToX(f) {
+  return (Math.log10(Math.max(1, f)) - LOG_MIN) / (LOG_MAX - LOG_MIN);
+}
+function dbToY(db) {
+  return Math.min(1, Math.max(0, db / DB_RANGE));
+}
+
+function recomputeGrid() {
+  const out = [];
+  const bx = FREQ_BOUNDS.map(freqToX);
+
+  // Band 1: structural (4 cells, 2x2)
+  {
+    const x0 = bx[0], x1 = bx[1], xm = (x0 + x1) / 2;
+    out.push({ x0, x1: xm, y0: 0.5, y1: 1.0, action: { type: 'addVoice' } });
+    out.push({ x0: xm, x1, y0: 0.5, y1: 1.0, action: { type: 'removeVoice' } });
+    out.push({ x0, x1: xm, y0: 0.0, y1: 0.5, action: { type: 'addMeasure' } });
+    out.push({ x0: xm, x1, y0: 0.0, y1: 0.5, action: { type: 'removeMeasure' } });
+  }
+
+  // Band 2: state — three strips (top→bottom):
+  //   mode   (y 0.93..1.0,  ~7% — RARE, requires very loud snare-body hit)
+  //   octave (y 0.70..0.93, ~23% — somewhat rare)
+  //   degree (y 0.00..0.70, ~70% — common, melodic motion from regular drumming)
+  {
+    const x0 = bx[1], x1 = bx[2];
+    const modeBottom = 0.93;
+    const octaveBottom = 0.70;
+    for (let i = 0; i < SCALE_NAMES.length; i++) {
+      const cw = (x1 - x0) / SCALE_NAMES.length;
+      out.push({
+        x0: x0 + i * cw, x1: x0 + (i + 1) * cw,
+        y0: modeBottom, y1: 1.0,
+        action: { type: 'setScale', scale: SCALE_NAMES[i] }
+      });
+    }
+    for (let i = 0; i < OCTAVE_STEPS.length; i++) {
+      const cw = (x1 - x0) / OCTAVE_STEPS.length;
+      out.push({
+        x0: x0 + i * cw, x1: x0 + (i + 1) * cw,
+        y0: octaveBottom, y1: modeBottom,
+        action: { type: 'setOctave', octave: OCTAVE_STEPS[i] }
+      });
+    }
+    const degCount = SCALES[state.scale].length;
+    for (let i = 0; i < degCount; i++) {
+      const cw = (x1 - x0) / degCount;
+      out.push({
+        x0: x0 + i * cw, x1: x0 + (i + 1) * cw,
+        y0: 0.0, y1: octaveBottom,
+        action: { type: 'setDegree', degree: i }
+      });
+    }
+  }
+
+  // Band 3: synth params — 7 strips of 6 cells
+  {
+    const x0 = bx[2], x1 = bx[3];
+    const strips = [
+      { type: 'setReverbSend', steps: SEND_STEPS },
+      { type: 'setDelaySend', steps: SEND_STEPS },
+      { type: 'setRelease', steps: R_STEPS },
+      { type: 'setDecay', steps: D_STEPS },
+      { type: 'setAttack', steps: A_STEPS },
+      { type: 'setQ', steps: Q_STEPS },
+      { type: 'setCutoff', steps: CUTOFF_STEPS }
+    ];
+    // strips[0] at TOP, strips[strips.length-1] at BOTTOM
+    for (let s = 0; s < strips.length; s++) {
+      const y1 = 1 - s / strips.length;
+      const y0 = 1 - (s + 1) / strips.length;
+      const param = strips[s];
+      for (let i = 0; i < param.steps.length; i++) {
+        const cw = (x1 - x0) / param.steps.length;
+        out.push({
+          x0: x0 + i * cw, x1: x0 + (i + 1) * cw,
+          y0, y1,
+          action: { type: param.type, value: param.steps[i] }
+        });
+      }
+    }
+  }
+
+  // Band 4: waveform append (5 cells top half) + clear stack (full bottom half)
+  {
+    const x0 = bx[3], x1 = bx[4];
+    for (let i = 0; i < WAVEFORMS.length; i++) {
+      const cw = (x1 - x0) / WAVEFORMS.length;
+      out.push({
+        x0: x0 + i * cw, x1: x0 + (i + 1) * cw,
+        y0: 0.5, y1: 1.0,
+        action: { type: 'pushWave', wave: WAVEFORMS[i] }
+      });
+    }
+    out.push({ x0, x1, y0: 0.0, y1: 0.5, action: { type: 'clearStack' } });
+  }
+
+  // Band 5: per-voice toggles — 4 voice columns, each with measures*16 cells
+  {
+    const x0 = bx[4], x1 = bx[5];
+    const voiceColW = (x1 - x0) / MAX_VOICES;
+    for (let v = 0; v < state.voices.length; v++) {
+      const vx0 = x0 + v * voiceColW;
+      const vx1 = vx0 + voiceColW;
+      const rows = state.measures;
+      const cols = STEPS_PER_MEASURE;
+      const cellW = (vx1 - vx0) / cols;
+      const cellH = 1 / rows;
+      for (let m = 0; m < rows; m++) {
+        for (let s = 0; s < cols; s++) {
+          const stepIdx = m * cols + s;
+          out.push({
+            x0: vx0 + s * cellW, x1: vx0 + (s + 1) * cellW,
+            y0: 1 - (m + 1) * cellH, y1: 1 - m * cellH,
+            action: { type: 'toggle', voiceIndex: v, stepIndex: stepIdx }
+          });
+        }
+      }
+    }
+  }
+
+  zones = out;
+}
+
+function findZone(freqHz, dB) {
+  const x = freqToX(freqHz);
+  const y = dbToY(dB);
+  for (const z of zones) {
+    if (x >= z.x0 && x < z.x1 && y >= z.y0 && y < z.y1) return z;
+  }
+  return null;
+}
+
+// =========================================================================
+// Action dispatch
+// =========================================================================
+function dispatchAction(action) {
+  switch (action.type) {
+    case 'addVoice':
+      if (state.voices.length < MAX_VOICES) {
+        const v = makeVoice();
+        state.voices.push(v);
+        if (audio) ensureVoiceNodes(v);
+      }
+      break;
+    case 'removeVoice':
+      if (state.voices.length > 1) {
+        const v = state.voices.pop();
+        teardownVoiceNodes(v);
+        if (midiOut) midiOut.send([0x80, PAD_NOTES[state.voices.length], 0]);
+        if (state.selectedVoiceIndex >= state.voices.length) {
+          selectVoice(state.voices.length - 1);
+        }
+      }
+      break;
+    case 'addMeasure':
+      if (state.measures < MAX_MEASURES) {
+        state.measures++;
+        for (const v of state.voices) ensurePatternSize(v, state.measures);
+      }
+      break;
+    case 'removeMeasure':
+      if (state.measures > 1) {
+        state.measures--;
+        for (const v of state.voices) ensurePatternSize(v, state.measures);
+        if (state.cursor >= state.measures * STEPS_PER_MEASURE) state.cursor = 0;
+      }
+      break;
+    case 'setScale':
+      state.scale = action.scale;
+      // Clamp every voice's degree to the new scale length.
+      const len = SCALES[state.scale].length;
+      for (const v of state.voices) {
+        if (v.degree >= len) v.degree = len - 1;
+      }
+      break;
+    case 'setDegree': {
+      const v = selectedVoice();
+      if (v) {
+        const len = SCALES[state.scale].length;
+        if (action.degree < len) v.degree = action.degree;
+      }
+      break;
+    }
+    case 'setOctave': {
+      const v = selectedVoice();
+      if (v) v.octave = action.octave;
+      break;
+    }
+    case 'toggle': {
+      const v = state.voices[action.voiceIndex];
+      if (v && action.stepIndex < v.pattern.length) {
+        v.pattern[action.stepIndex] = !v.pattern[action.stepIndex];
+      }
+      break;
+    }
+    case 'pushWave': {
+      const v = selectedVoice();
+      if (v && v.stack.length < MAX_STACK) v.stack.push(action.wave);
+      break;
+    }
+    case 'clearStack': {
+      const v = selectedVoice();
+      if (v) v.stack = [v.stack[0] || 'sine'];
+      break;
+    }
+    case 'setCutoff': { const v = selectedVoice(); if (v) v.filter.cutoff = action.value; break; }
+    case 'setQ':      { const v = selectedVoice(); if (v) v.filter.q = action.value; break; }
+    case 'setAttack': { const v = selectedVoice(); if (v) v.env.a = action.value; break; }
+    case 'setDecay':  { const v = selectedVoice(); if (v) v.env.d = action.value; break; }
+    case 'setRelease':{ const v = selectedVoice(); if (v) v.env.r = action.value; break; }
+    case 'setDelaySend':  { const v = selectedVoice(); if (v) { v.send.delay = action.value; if (v.delaySendGain && audio) v.delaySendGain.gain.linearRampToValueAtTime(action.value, audio.ctx.currentTime + 0.02); } break; }
+    case 'setReverbSend': { const v = selectedVoice(); if (v) { v.send.reverb = action.value; if (v.reverbSendGain && audio) v.reverbSendGain.gain.linearRampToValueAtTime(action.value, audio.ctx.currentTime + 0.02); } break; }
+  }
+  recomputeGrid();
+  renderUI();
+}
+
+// =========================================================================
+// UI rendering
+// =========================================================================
+const $ = id => document.getElementById(id);
+
+function renderUI() {
+  $('ls-tonic').textContent = midiToNoteName(state.tonic);
+  $('ls-bpm').textContent = state.taps.length >= 2 ? Math.round(state.bpm) : (state.bpm === 120 ? '120 (default)' : Math.round(state.bpm));
+  $('ls-scale').textContent = state.scale;
+  $('ls-voices').textContent = state.voices.length;
+  $('ls-measures').textContent = state.measures;
+  $('ls-step').textContent = state.started ? (state.cursor + 1) + '/' + (state.measures * STEPS_PER_MEASURE) : '—';
+  $('ls-selected').textContent = state.voices.length ? ('v' + (state.selectedVoiceIndex + 1)) : '—';
+  renderVoiceCards();
+}
+
+function renderVoiceCards() {
+  const strip = $('voice-strip');
+  if (!strip.children.length) {
+    for (let i = 0; i < MAX_VOICES; i++) {
+      const card = document.createElement('div');
+      card.className = 'voice-card';
+      card.innerHTML = `
+        <div class="vc-head">
+          <span>v${i + 1}</span>
+          <span class="vc-pad">pad ${PAD_NOTES[i]}</span>
+        </div>
+        <div class="vc-pattern" data-pat></div>
+        <div class="vc-info">
+          <span>deg <b data-deg>—</b></span>
+          <span>oct <b data-oct>—</b></span>
+          <span>stk <b data-stk>—</b></span>
+        </div>
+        <div class="vc-vol"><div class="vc-vol-fill" data-vol></div></div>
+      `;
+      strip.appendChild(card);
+    }
+  }
+  const cards = strip.children;
+  for (let i = 0; i < MAX_VOICES; i++) {
+    const card = cards[i];
+    const v = state.voices[i];
+    card.classList.toggle('inactive', !v);
+    card.classList.toggle('selected', i === state.selectedVoiceIndex && !!v);
+    const padEl = card.querySelector('.vc-pad');
+    padEl.classList.toggle('lit', i === state.selectedVoiceIndex && !!v);
+    const pat = card.querySelector('[data-pat]');
+    pat.innerHTML = '';
+    const visibleSteps = STEPS_PER_MEASURE;
+    const measure0Start = 0;
+    for (let s = 0; s < visibleSteps; s++) {
+      const cell = document.createElement('div');
+      cell.className = 'vc-step';
+      if (v && v.pattern[measure0Start + s]) cell.classList.add('on');
+      if (state.started && state.cursor % STEPS_PER_MEASURE === s) cell.classList.add('cursor');
+      pat.appendChild(cell);
+    }
+    card.querySelector('[data-deg]').textContent = v ? v.degree : '—';
+    card.querySelector('[data-oct]').textContent = v ? v.octave : '—';
+    card.querySelector('[data-stk]').textContent = v ? v.stack.length : '—';
+    card.querySelector('[data-vol]').style.width = (state.knobBuffer[i] * 100) + '%';
+  }
+}
+
+// =========================================================================
+// Canvas grid render
+// =========================================================================
+const canvas = $('grid-canvas');
+const cctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.floor(r.width * dpr);
+  canvas.height = Math.floor(r.height * dpr);
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function drawGrid() {
+  const r = canvas.getBoundingClientRect();
+  const W = r.width, H = r.height;
+  cctx.clearRect(0, 0, W, H);
+
+  // Background.
+  cctx.fillStyle = '#faf8f3';
+  cctx.fillRect(0, 0, W, H);
+
+  // Zones.
+  const bx = FREQ_BOUNDS.map(freqToX);
+  for (const z of zones) {
+    const x = z.x0 * W;
+    const y = (1 - z.y1) * H;
+    const w = (z.x1 - z.x0) * W;
+    const h = (z.y1 - z.y0) * H;
+
+    // Dim inactive voice toggle cells.
+    let alpha = 1;
+    if (z.action.type === 'toggle') {
+      const v = state.voices[z.action.voiceIndex];
+      if (!v) alpha = 0.25;
+      else if (z.action.voiceIndex !== state.selectedVoiceIndex) alpha = 0.55;
+      if (v && v.pattern[z.action.stepIndex]) {
+        cctx.fillStyle = 'rgba(29,158,117,0.22)';
+        cctx.fillRect(x, y, w, h);
+      }
+      // Cursor pulse.
+      if (state.started && v && (state.cursor === z.action.stepIndex)) {
+        cctx.fillStyle = 'rgba(29,158,117,0.4)';
+        cctx.fillRect(x, y, w, h);
+      }
+    }
+
+    cctx.strokeStyle = alpha < 1 ? 'rgba(220,215,206,' + alpha + ')' : '#ece7e0';
+    cctx.lineWidth = 0.5;
+    cctx.strokeRect(x + 0.25, y + 0.25, w - 0.5, h - 0.5);
+  }
+
+  // Heavier band separators.
+  cctx.strokeStyle = '#d8d3cb';
+  cctx.lineWidth = 1;
+  for (let i = 1; i < bx.length - 1; i++) {
+    cctx.beginPath();
+    cctx.moveTo(bx[i] * W, 0);
+    cctx.lineTo(bx[i] * W, H);
+    cctx.stroke();
+  }
+
+  // Hit dot (fades over 600 ms).
+  if (state.hit) {
+    const age = (performance.now() - state.hit.t) / 600;
+    if (age < 1) {
+      const x = freqToX(state.hit.freqHz) * W;
+      const y = (1 - dbToY(state.hit.dB)) * H;
+      cctx.fillStyle = `rgba(29,158,117,${1 - age})`;
+      cctx.beginPath();
+      cctx.arc(x, y, 6 - 4 * age, 0, Math.PI * 2);
+      cctx.fill();
+      cctx.strokeStyle = `rgba(29,158,117,${0.8 - 0.8 * age})`;
+      cctx.lineWidth = 1;
+      cctx.beginPath();
+      cctx.arc(x, y, 6 - 4 * age, 0, Math.PI * 2);
+      cctx.stroke();
+    }
+  }
+}
+
+function renderLoop() {
+  if (zones.length) drawGrid();
+  renderVoiceCards();
+  requestAnimationFrame(renderLoop);
+}
+
+// =========================================================================
+// Boot
+// =========================================================================
+async function init() {
+  if (!navigator.requestMIDIAccess) {
+    $('unsupported').style.display = '';
+    $('app').style.display = 'none';
+    return;
+  }
+  resizeCanvas();
+  window.addEventListener('resize', () => { resizeCanvas(); drawGrid(); });
+
+  // Initial voice so the action grid has something to show.
+  state.voices.push(makeVoice());
+  recomputeGrid();
+  renderUI();
+  renderLoop();
+
+  // Audio device list (populate after permission so labels show).
+  await populateAudioInputs(false);
+  // Re-populate whenever the OS device list changes (device plugged in/out,
+  // permission newly granted, etc.) — this is how a late-arriving Scarlett gets surfaced.
+  navigator.mediaDevices.addEventListener('devicechange', () => populateAudioInputs(!!audio));
+
+  // MIDI.
+  try {
+    await openMidi();
+    setStatus('midi connected · click start', 'active');
+  } catch (e) {
+    setStatus('midi unavailable · ' + e.message, 'error');
+  }
+
+  $('audio-select').addEventListener('change', async e => {
+    localStorage.setItem(LS_AUDIO, e.target.value);
+    if (audio) {
+      try {
+        await switchAudioInput(e.target.value || undefined);
+        setStatus('audio input switched', 'active');
+      } catch (err) {
+        console.error(err);
+        setStatus('failed to switch input: ' + err.message, 'error');
+      }
+    }
+  });
+  $('midi-in-select').addEventListener('change', e => {
+    localStorage.setItem(LS_MIDI_IN, e.target.value);
+    attachMidiIn(e.target.value);
+  });
+  $('midi-out-select').addEventListener('change', e => {
+    localStorage.setItem(LS_MIDI_OUT, e.target.value);
+    attachMidiOut(e.target.value);
+  });
+  $('btn-start').addEventListener('click', onStart);
+  $('btn-stop').addEventListener('click', onStop);
+}
+
+async function populateAudioInputs(haveLabels) {
+  const sel = $('audio-select');
+  const cur = sel.value;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const inputs = devices.filter(d => d.kind === 'audioinput');
+  sel.innerHTML = '';
+  const dash = document.createElement('option');
+  dash.value = ''; dash.textContent = haveLabels ? '— default —' : '— grant mic permission to see labels —';
+  sel.appendChild(dash);
+  for (const d of inputs) {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = d.label || ('input ' + d.deviceId.slice(0, 6));
+    sel.appendChild(o);
+  }
+  const prefer = localStorage.getItem(LS_AUDIO);
+  if (prefer && inputs.find(d => d.deviceId === prefer)) sel.value = prefer;
+  else if (cur && inputs.find(d => d.deviceId === cur)) sel.value = cur;
+}
+
+async function onStart() {
+  $('btn-start').disabled = true;
+  setStatus('opening audio…', '');
+  try {
+    const deviceId = $('audio-select').value || undefined;
+    await openAudio(deviceId);
+    await populateAudioInputs(true); // refresh with labels
+    state.running = true;
+    for (const v of state.voices) ensureVoiceNodes(v);
+    if (midiOut) {
+      for (const n of PAD_NOTES) midiOut.send([0x80, n, 0]);
+      midiOut.send([0x90, PAD_NOTES[state.selectedVoiceIndex], 127]);
+    }
+    analysisTick();
+    startScheduler();
+    $('btn-stop').disabled = false;
+    setStatus('listening · press a key in c3-c4 to start the song', 'active');
+  } catch (e) {
+    console.error(e);
+    setStatus('failed: ' + e.message, 'error');
+    $('btn-start').disabled = false;
+  }
+}
+
+function onStop() {
+  state.running = false;
+  state.started = false;
+  state.cursor = 0;
+  state.taps = [];
+  stopScheduler();
+  if (analysisRaf) cancelAnimationFrame(analysisRaf);
+  analysisRaf = null;
+  for (const v of state.voices) teardownVoiceNodes(v);
+  if (midiOut) for (const n of PAD_NOTES) midiOut.send([0x80, n, 0]);
+  closeAudio();
+  $('btn-stop').disabled = true;
+  $('btn-start').disabled = false;
+  setStatus('stopped', '');
+  renderUI();
+}
+
+function setStatus(text, cls) {
+  const el = $('status');
+  el.textContent = text;
+  el.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+init();
+</script>
+</body>
+</html>

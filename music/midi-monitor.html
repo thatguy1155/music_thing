@@ -1,0 +1,881 @@
+<!doctype html>
+<!--
+  MIDI Monitor — listen, identify, and label MIDI controllers.
+  Inputs: any Web MIDI input device.
+  Outputs: device-profile JSON files (one per device) saved to music/mappings/.
+  How to play: open in Chrome → pick a device → name it → hit pads / wiggle knobs.
+  Click any message row or live-state pill to give that control a friendly label.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MIDI Monitor</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Playfair+Display:wght@400;500&display=swap');
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#faf8f3;color:#2a2724;font-family:'DM Mono',monospace;font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+body{padding:2.5rem 1rem 4rem;display:flex;justify-content:center}
+main{width:100%;max-width:720px;display:flex;flex-direction:column;gap:1.5rem}
+
+h1{font-family:'Playfair Display',serif;font-weight:400;font-size:20px;letter-spacing:0.2em;color:#2a2724;text-align:center}
+.tagline{font-size:11px;letter-spacing:0.18em;color:#9a9590;text-align:center;margin-top:-0.25rem}
+
+.section-title{font-size:10px;letter-spacing:0.16em;color:#9a9590;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:0.5px solid #ece7e0;margin-bottom:0.5rem}
+
+.row{display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem}
+.row label{font-size:11px;color:#807a72;letter-spacing:0.06em;min-width:72px}
+
+select,input[type=text]{font-family:'DM Mono',monospace;font-size:12px;font-weight:300;color:#2a2724;background:#fff;border:0.5px solid #d8d3cb;border-radius:6px;padding:8px 10px;outline:none;flex:1;letter-spacing:0.02em}
+.label-count{font-size:10px;letter-spacing:0.1em;color:#9a9590;white-space:nowrap;text-transform:uppercase;padding-left:0.25rem}
+.label-count.has{color:#1d9e75}
+select:focus,input[type=text]:focus{border-color:#807a72}
+
+.controls{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:0.25rem 0}
+button{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:0.1em;cursor:pointer;border-radius:6px;padding:9px 18px;border:0.5px solid #d8d3cb;background:transparent;color:#2a2724;transition:background 0.15s,opacity 0.15s,border-color 0.15s,transform 0.05s}
+button:hover:not(:disabled){background:#fff;border-color:#807a72}
+button:active:not(:disabled){transform:scale(0.97)}
+button.primary{background:#2a2724;border-color:#2a2724;color:#faf8f3}
+button.primary:hover:not(:disabled){background:#1a1714;border-color:#1a1714}
+button:disabled{opacity:0.3;cursor:default}
+
+.status{font-size:10px;letter-spacing:0.12em;color:#9a9590;text-align:center;min-height:14px;text-transform:uppercase}
+.status.error{color:#c44}
+.status.active{color:#1d9e75}
+
+.panel{background:#fff;border:0.5px solid #ece7e0;border-radius:8px;padding:1rem 1.1rem}
+
+.ls-grid{display:grid;grid-template-columns:auto 1fr;gap:0.55rem 1.1rem;align-items:start}
+.ls-label{font-size:10px;letter-spacing:0.1em;color:#9a9590;text-transform:uppercase;padding-top:3px}
+.ls-value{font-size:12px;color:#2a2724;min-height:22px;display:flex;flex-wrap:wrap;gap:0.4rem}
+.pill{display:inline-flex;align-items:center;gap:0.4rem;padding:3px 9px;border:0.5px solid #d8d3cb;border-radius:99px;font-size:11px;background:#faf8f3;cursor:pointer;transition:border-color 0.1s,background 0.1s}
+.pill:hover{border-color:#807a72;background:#fff}
+.pill .pv{color:#9a9590;font-size:10px}
+.pill.held{background:#e8f3ed;border-color:#1d9e75;color:#1d6e52}
+.pill.held .pv{color:#1d9e75}
+.pill.static{cursor:default}
+.pill.static:hover{border-color:#d8d3cb;background:#faf8f3}
+.empty{color:#bcb6ad;font-style:italic;font-size:11px;padding-top:2px}
+
+.log-wrap{background:#fff;border:0.5px solid #ece7e0;border-radius:8px;overflow:hidden}
+.log-header{display:grid;grid-template-columns:72px 38px 88px 90px 1fr 64px;gap:0.5rem;padding:0.65rem 0.9rem;font-size:10px;letter-spacing:0.1em;color:#9a9590;text-transform:uppercase;border-bottom:0.5px solid #ece7e0}
+.log{max-height:360px;overflow-y:auto;font-size:11.5px}
+.log-row{display:grid;grid-template-columns:72px 38px 88px 90px 1fr 64px;gap:0.5rem;padding:0.45rem 0.9rem;border-bottom:0.5px solid #f5f1ea;cursor:pointer;align-items:center}
+.log-row:last-child{border-bottom:none}
+.log-row:hover{background:#faf8f3}
+.log-row.unlabelable{cursor:default}
+.log-row.unlabelable:hover{background:transparent}
+.lr-time{color:#bcb6ad;font-size:10.5px}
+.lr-ch{color:#807a72}
+.lr-type{color:#2a2724}
+.lr-num{color:#807a72}
+.lr-num .nn{color:#bcb6ad}
+.lr-label{color:#1d9e75;font-weight:500}
+.lr-val{color:#2a2724;text-align:right}
+.log-empty{padding:2rem 1rem;text-align:center;color:#bcb6ad;font-style:italic;font-size:11px}
+
+.editor-overlay{position:fixed;inset:0;background:rgba(42,39,36,0.18);display:none;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(2px)}
+.editor-overlay.show{display:flex}
+.editor-box{background:#faf8f3;border:0.5px solid #d8d3cb;border-radius:10px;padding:1.4rem;min-width:340px;max-width:90vw;display:flex;flex-direction:column;gap:0.85rem;box-shadow:0 12px 40px rgba(0,0,0,0.12)}
+.editor-title{font-size:10px;letter-spacing:0.16em;color:#9a9590;text-transform:uppercase}
+.editor-key{font-size:13px;color:#2a2724;letter-spacing:0.04em;background:#fff;border:0.5px solid #ece7e0;border-radius:6px;padding:8px 12px}
+.editor-input{font-size:14px;padding:10px 12px;flex:0 0 auto;width:100%}
+.editor-actions{display:flex;justify-content:flex-end;gap:8px;align-items:center}
+.editor-actions .del{margin-right:auto;color:#c44;border-color:#e8c0c0}
+.editor-actions .del:hover{border-color:#c44;background:#fff5f5}
+
+.unsupported{background:#fff8eb;border:0.5px solid #e8c97a;border-radius:8px;padding:1.1rem;font-size:12px;color:#7a5a13;line-height:1.6}
+
+.export-hint{font-size:10.5px;color:#9a9590;text-align:center;letter-spacing:0.04em;font-style:italic;margin-top:0.25rem}
+.export-hint code{font-family:'DM Mono',monospace;font-style:normal;background:#fff;border:0.5px solid #ece7e0;padding:1px 5px;border-radius:3px;color:#807a72}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>MIDI MONITOR</h1>
+    <p class="tagline">listen · identify · label</p>
+  </header>
+
+  <div id="unsupported" class="unsupported" style="display:none">
+    Your browser doesn't support the Web MIDI API. Please open this file in Chrome, Edge, Brave, or Opera.
+  </div>
+
+  <div id="app" style="display:none;flex-direction:column;gap:1.5rem">
+
+    <section>
+      <div class="section-title">device</div>
+      <div class="row">
+        <label for="device-select">input</label>
+        <select id="device-select"><option>—</option></select>
+      </div>
+      <div class="row">
+        <label for="device-name">name as</label>
+        <input type="text" id="device-name" placeholder="kebab-case (e.g. td17, nord-drum, push-2)" autocomplete="off" spellcheck="false">
+        <span class="label-count" id="label-count">0 labels</span>
+      </div>
+    </section>
+
+    <section>
+      <div class="controls">
+        <button class="primary" id="btn-start">start</button>
+        <button id="btn-stop" disabled>stop</button>
+        <button id="btn-clear">clear</button>
+        <button id="btn-export">export</button>
+        <button id="btn-import">import</button>
+        <input type="file" id="file-input" accept=".json" style="display:none">
+      </div>
+      <p id="status" class="status">ready</p>
+    </section>
+
+    <section>
+      <div class="section-title">live state</div>
+      <div class="panel">
+        <div class="ls-grid">
+          <div class="ls-label">held notes</div>     <div class="ls-value" id="ls-held"></div>
+          <div class="ls-label">cc values</div>      <div class="ls-value" id="ls-cc"></div>
+          <div class="ls-label">pitch bend</div>     <div class="ls-value" id="ls-pb"></div>
+          <div class="ls-label">aftertouch</div>     <div class="ls-value" id="ls-at"></div>
+          <div class="ls-label">poly at</div>        <div class="ls-value" id="ls-pat"></div>
+          <div class="ls-label">program</div>        <div class="ls-value" id="ls-pc"></div>
+          <div class="ls-label">clock</div>          <div class="ls-value" id="ls-clock"></div>
+          <div class="ls-label">transport</div>      <div class="ls-value" id="ls-transport"></div>
+          <div class="ls-label">sysex</div>          <div class="ls-value" id="ls-sysex"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title">log · newest first · click to label</div>
+      <div class="log-wrap">
+        <div class="log-header">
+          <span>Δt</span><span>ch</span><span>type</span><span>num</span><span>label</span><span>val</span>
+        </div>
+        <div class="log" id="log"></div>
+      </div>
+      <p class="export-hint">exports save to your downloads folder — move into <code>music/mappings/</code></p>
+    </section>
+  </div>
+</main>
+
+<div id="editor" class="editor-overlay" role="dialog" aria-modal="true">
+  <div class="editor-box">
+    <div class="editor-title">label control</div>
+    <div class="editor-key" id="editor-key"></div>
+    <input type="text" class="editor-input" id="editor-input" placeholder="friendly name (e.g. Kick, Filter Cutoff)" autocomplete="off" spellcheck="false">
+    <div class="editor-actions">
+      <button class="del" id="editor-delete" style="display:none">delete</button>
+      <button id="editor-cancel">cancel</button>
+      <button class="primary" id="editor-save">save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const MAX_LOG = 200;
+const LS_PREFIX = 'midi-monitor:labels:';
+const LS_LAST_DEVICE_NAME = 'midi-monitor:lastDeviceName';
+const LS_LAST_INPUT_ID = 'midi-monitor:lastInputId';
+const LS_LAST_INPUT_NAME = 'midi-monitor:lastInputName';
+
+const $ = id => document.getElementById(id);
+const els = {
+  unsupported: $('unsupported'),
+  app: $('app'),
+  deviceSelect: $('device-select'),
+  deviceName: $('device-name'),
+  btnStart: $('btn-start'),
+  btnStop: $('btn-stop'),
+  btnClear: $('btn-clear'),
+  btnExport: $('btn-export'),
+  btnImport: $('btn-import'),
+  fileInput: $('file-input'),
+  status: $('status'),
+  lsHeld: $('ls-held'),
+  lsCc: $('ls-cc'),
+  lsPb: $('ls-pb'),
+  lsAt: $('ls-at'),
+  lsPat: $('ls-pat'),
+  lsPc: $('ls-pc'),
+  lsClock: $('ls-clock'),
+  lsTransport: $('ls-transport'),
+  lsSysex: $('ls-sysex'),
+  labelCount: $('label-count'),
+  log: $('log'),
+  editor: $('editor'),
+  editorKey: $('editor-key'),
+  editorInput: $('editor-input'),
+  editorSave: $('editor-save'),
+  editorCancel: $('editor-cancel'),
+  editorDelete: $('editor-delete')
+};
+
+// ── State ─────────────────────────────────────────────────
+let access = null;
+let currentPort = null;
+let currentInputId = null;
+let started = false;
+let deviceName = '';
+let labels = {};
+let log = [];
+let nextLogId = 1;
+let lastMsgTime = null;
+const held = new Map();
+const cc = new Map();
+const pb = new Map();
+const at = new Map();
+const pat = new Map();
+const pc = new Map();
+let clockTimes = [];
+let clockCount = 0;
+let lastTransport = '';
+let lastSysex = null;
+let editingKey = null;
+
+// ── Utilities ─────────────────────────────────────────────
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function noteName(n) {
+  if (n < 0 || n > 127) return '?';
+  return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function keyFor(m) {
+  switch (m.type) {
+    case 'note-on':
+    case 'note-off': return `note-${m.num}-ch${m.channel}`;
+    case 'pat':      return `pat-${m.num}-ch${m.channel}`;
+    case 'cc':       return `cc-${m.num}-ch${m.channel}`;
+    case 'pb':       return `pb-ch${m.channel}`;
+    case 'at':       return `at-ch${m.channel}`;
+    case 'pc':       return `pc-ch${m.channel}`;
+    default:         return null;
+  }
+}
+
+function labelFor(key) { return (key && labels[key]) || ''; }
+
+function loadLabels(name) {
+  if (!name) return {};
+  try {
+    const raw = localStorage.getItem(LS_PREFIX + name);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveLabels() {
+  if (!deviceName) return;
+  try {
+    localStorage.setItem(LS_PREFIX + deviceName, JSON.stringify(labels));
+    localStorage.setItem(LS_LAST_DEVICE_NAME, deviceName);
+  } catch {}
+}
+
+// ── MIDI parsing ──────────────────────────────────────────
+function parse(data, ts) {
+  const status = data[0];
+  if (status === 0xf8) return { type: 'clock', ts };
+  if (status === 0xfa) return { type: 'start', ts };
+  if (status === 0xfb) return { type: 'continue', ts };
+  if (status === 0xfc) return { type: 'stop', ts };
+  if (status === 0xfe) return null; // active sensing — ignore
+  if (status === 0xff) return { type: 'reset', ts };
+  if (status === 0xf0) return { type: 'sysex', bytes: Array.from(data), ts };
+
+  const upper = status & 0xf0;
+  const channel = (status & 0x0f) + 1;
+
+  switch (upper) {
+    case 0x80: return { type: 'note-off', channel, num: data[1], val: data[2], ts };
+    case 0x90: return data[2] === 0
+      ? { type: 'note-off', channel, num: data[1], val: 0, ts }
+      : { type: 'note-on',  channel, num: data[1], val: data[2], ts };
+    case 0xa0: return { type: 'pat', channel, num: data[1], val: data[2], ts };
+    case 0xb0: return { type: 'cc',  channel, num: data[1], val: data[2], ts };
+    case 0xc0: return { type: 'pc',  channel, val: data[1], ts };
+    case 0xd0: return { type: 'at',  channel, val: data[1], ts };
+    case 0xe0: return { type: 'pb',  channel, val: (data[2] << 7) | data[1], ts };
+  }
+  return { type: 'unknown', bytes: Array.from(data), ts };
+}
+
+function onMessage(ev) {
+  const m = parse(ev.data, ev.timeStamp);
+  if (!m) return;
+
+  switch (m.type) {
+    case 'note-on':  held.set(`${m.channel}-${m.num}`, m.val); break;
+    case 'note-off': held.delete(`${m.channel}-${m.num}`); break;
+    case 'cc':       cc.set(`${m.channel}-${m.num}`, m.val); break;
+    case 'pb':       pb.set(m.channel, m.val); break;
+    case 'at':       at.set(m.channel, m.val); break;
+    case 'pat':      pat.set(`${m.channel}-${m.num}`, m.val); break;
+    case 'pc':       pc.set(m.channel, m.val); break;
+    case 'start':
+    case 'continue':
+    case 'stop':     lastTransport = m.type; break;
+    case 'clock':
+      clockCount++;
+      clockTimes.push(m.ts);
+      if (clockTimes.length > 96) clockTimes.shift();
+      break;
+    case 'sysex':    lastSysex = m.bytes; break;
+  }
+
+  if (m.type !== 'clock' && m.type !== 'reset') {
+    const dt = lastMsgTime == null ? 0 : (m.ts - lastMsgTime) / 1000;
+    lastMsgTime = m.ts;
+    log.unshift({ id: nextLogId++, dt, m });
+    if (log.length > MAX_LOG) log.length = MAX_LOG;
+  }
+
+  scheduleRender();
+}
+
+function bindPort(port) {
+  unbindPort();
+  currentPort = port;
+  currentInputId = port.id;
+  port.onmidimessage = onMessage;
+  localStorage.setItem(LS_LAST_INPUT_ID, port.id);
+  if (port.name) localStorage.setItem(LS_LAST_INPUT_NAME, port.name);
+  // Guarantee a deviceName so labeling is never silently blocked.
+  if (!deviceName && port.name) {
+    const guess = port.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    if (guess) {
+      els.deviceName.value = guess;
+      deviceName = guess;
+      labels = loadLabels(guess);
+      localStorage.setItem(LS_LAST_DEVICE_NAME, guess);
+    }
+  }
+  if (started) setStatus('listening to ' + (port.name || 'device'), 'active');
+}
+
+function unbindPort() {
+  if (currentPort) {
+    try { currentPort.onmidimessage = null; } catch {}
+    currentPort = null;
+    currentInputId = null;
+  }
+}
+
+function connectedInputs() {
+  if (!access) return [];
+  return [...access.inputs.values()].filter(p => p.state === 'connected');
+}
+
+function findPortByName(name) {
+  if (!name) return null;
+  return connectedInputs().find(p => p.name === name) || null;
+}
+
+// ── Device list ───────────────────────────────────────────
+function refreshDevices() {
+  const sel = els.deviceSelect;
+  const prev = sel.value || localStorage.getItem(LS_LAST_INPUT_ID) || '';
+  const prevName = localStorage.getItem(LS_LAST_INPUT_NAME) || '';
+  sel.innerHTML = '';
+
+  const ports = connectedInputs();
+
+  if (ports.length === 0) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = '— no MIDI inputs detected —';
+    sel.appendChild(o);
+    if (currentInputId) { unbindPort(); setStatus('device disconnected', 'error'); }
+    return;
+  }
+
+  const o0 = document.createElement('option');
+  o0.value = '';
+  o0.textContent = '— pick a device —';
+  sel.appendChild(o0);
+
+  for (const input of ports) {
+    const o = document.createElement('option');
+    o.value = input.id;
+    o.textContent = (input.name || 'unknown') + (input.manufacturer ? ' · ' + input.manufacturer : '');
+    sel.appendChild(o);
+  }
+
+  // Restore selection by id, then by name, then auto-bind to first if started.
+  const currentStillConnected = currentInputId && ports.some(p => p.id === currentInputId);
+  if (currentStillConnected) {
+    sel.value = currentInputId;
+    return;
+  }
+  // Our previously bound port disappeared or never bound.
+  if (currentInputId) {
+    unbindPort();
+  }
+  const byId = prev ? ports.find(p => p.id === prev) : null;
+  const byName = byId ? null : findPortByName(prevName);
+  const target = byId || byName;
+  if (target) {
+    sel.value = target.id;
+    if (started) bindPort(target);
+  } else if (started && ports.length > 0) {
+    // No remembered port available — auto-bind to first connected so the user isn't stuck.
+    sel.value = ports[0].id;
+    bindPort(ports[0]);
+  }
+}
+
+function setDeviceById(id) {
+  if (!access) return;
+  if (!id) { unbindPort(); return; }
+  const port = access.inputs.get(id);
+  if (!port || port.state !== 'connected') {
+    setStatus('that device is disconnected', 'error');
+    return;
+  }
+  if (started) bindPort(port);
+  else {
+    currentInputId = id;
+    localStorage.setItem(LS_LAST_INPUT_ID, id);
+    if (port.name) localStorage.setItem(LS_LAST_INPUT_NAME, port.name);
+  }
+
+  if (!els.deviceName.value) {
+    const guess = (port.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    if (guess) { els.deviceName.value = guess; onDeviceNameChange(); }
+  }
+}
+
+function onDeviceNameChange() {
+  const n = els.deviceName.value.trim();
+  if (n === deviceName) return;
+  deviceName = n;
+  // Only pull from LS when we have nothing in memory yet (fresh open / first device pick).
+  // Otherwise labels follow the user across renames — typing over an auto-guessed name
+  // must NOT wipe the labels they already entered.
+  if (Object.keys(labels).length === 0 && deviceName) {
+    labels = loadLabels(deviceName);
+  }
+  if (deviceName) {
+    saveLabels();
+    localStorage.setItem(LS_LAST_DEVICE_NAME, deviceName);
+  }
+}
+
+// ── Start / stop ──────────────────────────────────────────
+async function acquireAccess() {
+  if (access) return true;
+  try {
+    access = await navigator.requestMIDIAccess({ sysex: true });
+    access.onstatechange = e => {
+      if (e && e.port) {
+        const verb = e.port.state === 'connected' ? 'connected' : 'disconnected';
+        setStatus(e.port.name + ' ' + verb, e.port.state === 'connected' ? 'active' : 'error');
+      }
+      refreshDevices();
+      scheduleRender();
+    };
+    return true;
+  } catch (err) {
+    setStatus('midi access denied: ' + err.message, 'error');
+    return false;
+  }
+}
+
+async function start() {
+  if (started) return;
+  if (!(await acquireAccess())) return;
+  started = true;
+  lastMsgTime = null;
+  els.btnStart.disabled = true;
+  els.btnStop.disabled = false;
+  // refreshDevices handles binding via the priority chain: dropdown → remembered id → remembered name → first connected.
+  refreshDevices();
+  if (!currentPort) {
+    setStatus('no MIDI inputs — connect a device, then click start again', 'error');
+  }
+}
+
+function stop() {
+  if (!started) return;
+  unbindPort();
+  started = false;
+  els.btnStart.disabled = false;
+  els.btnStop.disabled = true;
+  setStatus('stopped');
+}
+
+function clearAll() {
+  log = [];
+  lastMsgTime = null;
+  held.clear(); cc.clear(); pb.clear(); at.clear(); pat.clear(); pc.clear();
+  clockTimes = []; clockCount = 0;
+  lastTransport = '';
+  lastSysex = null;
+}
+
+function setStatus(msg, cls) {
+  els.status.textContent = msg;
+  els.status.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+// ── Export / import ───────────────────────────────────────
+function exportProfile() {
+  if (!deviceName) { setStatus('enter a device name first', 'error'); return; }
+  // Belt + suspenders: merge in-memory labels with whatever's stored in LS for this name
+  // so a rename mid-session can't silently produce an empty export.
+  const stored = loadLabels(deviceName);
+  const merged = { ...stored, ...labels };
+  const count = Object.keys(merged).length;
+  if (count === 0) {
+    setStatus('no labels yet — click a message row to label it before exporting', 'error');
+    return;
+  }
+  // Sync in-memory + LS to the merged set
+  labels = merged;
+  saveLabels();
+  const profile = {
+    deviceName,
+    labels: merged,
+    exportedAt: new Date().toISOString(),
+    version: 1
+  };
+  const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = deviceName + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus('exported ' + count + ' label' + (count === 1 ? '' : 's') + ' as ' + deviceName + '.json — move to music/mappings/', 'active');
+}
+
+function importProfile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const p = JSON.parse(reader.result);
+      if (!p || typeof p !== 'object' || typeof p.labels !== 'object') {
+        throw new Error('invalid profile structure');
+      }
+      const name = p.deviceName || file.name.replace(/\.json$/i, '');
+      els.deviceName.value = name;
+      deviceName = name;
+      const existing = loadLabels(name);
+      labels = { ...existing, ...p.labels };
+      saveLabels();
+      const count = Object.keys(p.labels).length;
+      setStatus('imported ' + count + ' label' + (count === 1 ? '' : 's') + ' for "' + name + '"', 'active');
+    } catch (err) {
+      setStatus('import failed: ' + err.message, 'error');
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ── Label editor ──────────────────────────────────────────
+function openEditor(key, displayText) {
+  if (!key) return;
+  if (!deviceName) { setStatus('enter a device name before labeling', 'error'); return; }
+  editingKey = key;
+  els.editorKey.textContent = displayText || key;
+  els.editorInput.value = labels[key] || '';
+  els.editorDelete.style.display = labels[key] ? 'inline-block' : 'none';
+  els.editor.classList.add('show');
+  // Focus aggressively across paint frames. The render loop can fire between the
+  // class-add and a single focus() call, so retry on the next two frames.
+  els.editorInput.focus();
+  els.editorInput.select();
+  requestAnimationFrame(() => {
+    els.editorInput.focus();
+    requestAnimationFrame(() => {
+      els.editorInput.focus();
+      els.editorInput.select();
+    });
+  });
+}
+
+function closeEditor() {
+  els.editor.classList.remove('show');
+  editingKey = null;
+}
+
+function saveLabel() {
+  if (!editingKey) return;
+  const v = els.editorInput.value.trim();
+  if (v) labels[editingKey] = v;
+  else delete labels[editingKey];
+  saveLabels();
+  closeEditor();
+  scheduleRender();
+}
+
+function deleteLabel() {
+  if (!editingKey) return;
+  delete labels[editingKey];
+  saveLabels();
+  closeEditor();
+  scheduleRender();
+}
+
+// ── Rendering ─────────────────────────────────────────────
+function fmtDt(s) {
+  if (s === 0) return '—';
+  if (s < 1) return '+' + Math.round(s * 1000) + 'ms';
+  return '+' + s.toFixed(2) + 's';
+}
+
+function pillEl(key, main, val, opts = {}) {
+  const span = document.createElement('span');
+  span.className = 'pill' + (opts.held ? ' held' : '') + (opts.static ? ' static' : '');
+  if (key) {
+    span.dataset.key = key;
+    span.dataset.display = (labels[key] ? labels[key] + ' · ' : '') + main;
+  }
+  const lbl = key && labels[key];
+  const mainEl = document.createElement('span');
+  mainEl.textContent = lbl || main;
+  span.appendChild(mainEl);
+  if (val !== undefined && val !== null && val !== '') {
+    const v = document.createElement('span');
+    v.className = 'pv';
+    v.textContent = val;
+    span.appendChild(v);
+  }
+  return span;
+}
+
+function fillList(el, entries, build) {
+  el.innerHTML = '';
+  if (entries.length === 0) {
+    const e = document.createElement('span');
+    e.className = 'empty';
+    e.textContent = '—';
+    el.appendChild(e);
+    return;
+  }
+  entries.forEach(entry => el.appendChild(build(entry)));
+}
+
+function renderLiveState() {
+  fillList(els.lsHeld,
+    [...held.entries()].sort(),
+    ([k, v]) => {
+      const [ch, n] = k.split('-').map(Number);
+      return pillEl('note-' + n + '-ch' + ch, n + ' ' + noteName(n) + ' ch' + ch, 'v' + v, { held: true });
+    });
+
+  fillList(els.lsCc,
+    [...cc.entries()].sort(),
+    ([k, v]) => {
+      const [ch, n] = k.split('-').map(Number);
+      return pillEl('cc-' + n + '-ch' + ch, 'cc' + n + ' ch' + ch, v);
+    });
+
+  fillList(els.lsPb,
+    [...pb.entries()].sort(),
+    ([ch, v]) => {
+      const c = v - 8192;
+      return pillEl('pb-ch' + ch, 'ch' + ch, (c >= 0 ? '+' : '') + c);
+    });
+
+  fillList(els.lsAt,
+    [...at.entries()].sort(),
+    ([ch, v]) => pillEl('at-ch' + ch, 'ch' + ch, v));
+
+  fillList(els.lsPat,
+    [...pat.entries()].sort(),
+    ([k, v]) => {
+      const [ch, n] = k.split('-').map(Number);
+      return pillEl('pat-' + n + '-ch' + ch, n + ' ' + noteName(n) + ' ch' + ch, v);
+    });
+
+  fillList(els.lsPc,
+    [...pc.entries()].sort(),
+    ([ch, v]) => pillEl('pc-ch' + ch, 'ch' + ch, 'prog ' + v));
+
+  // clock — derive BPM from recent tick spacing
+  els.lsClock.innerHTML = '';
+  if (clockTimes.length < 8) {
+    if (clockCount > 0) els.lsClock.appendChild(pillEl(null, clockCount + ' ticks', '', { static: true }));
+    else { const e = document.createElement('span'); e.className = 'empty'; e.textContent = '—'; els.lsClock.appendChild(e); }
+  } else {
+    const span = (clockTimes[clockTimes.length-1] - clockTimes[0]) / 1000;
+    const ticks = clockTimes.length - 1;
+    const tps = ticks / span;
+    const bpm = (tps * 60) / 24;
+    els.lsClock.appendChild(pillEl(null, bpm.toFixed(1) + ' bpm', tps.toFixed(1) + ' tps', { static: true }));
+  }
+
+  // transport
+  els.lsTransport.innerHTML = '';
+  if (lastTransport) els.lsTransport.appendChild(pillEl(null, lastTransport, '', { static: true }));
+  else { const e = document.createElement('span'); e.className = 'empty'; e.textContent = '—'; els.lsTransport.appendChild(e); }
+
+  // sysex
+  els.lsSysex.innerHTML = '';
+  if (!lastSysex) { const e = document.createElement('span'); e.className = 'empty'; e.textContent = '—'; els.lsSysex.appendChild(e); }
+  else {
+    const preview = lastSysex.slice(0, 8).map(b => b.toString(16).padStart(2,'0')).join(' ') + (lastSysex.length > 8 ? '…' : '');
+    els.lsSysex.appendChild(pillEl(null, lastSysex.length + ' bytes', preview, { static: true }));
+  }
+}
+
+function renderLog() {
+  if (log.length === 0) {
+    els.log.innerHTML = '<div class="log-empty">no messages yet — click start and play something</div>';
+    return;
+  }
+
+  const html = log.map(entry => {
+    const m = entry.m;
+    const k = keyFor(m);
+    const lbl = labelFor(k);
+    let ch = m.channel ? 'ch' + m.channel : '—';
+    let type = m.type;
+    let num = '';
+    let val = '';
+
+    switch (m.type) {
+      case 'note-on':
+      case 'note-off':
+        num = m.num + ' <span class="nn">' + noteName(m.num) + '</span>';
+        val = 'v' + m.val;
+        break;
+      case 'cc':       num = 'cc' + m.num; val = String(m.val); break;
+      case 'pat':      num = m.num + ' <span class="nn">' + noteName(m.num) + '</span>'; val = String(m.val); break;
+      case 'pc':       val = 'p' + m.val; break;
+      case 'at':       val = String(m.val); break;
+      case 'pb':       val = (m.val - 8192 >= 0 ? '+' : '') + (m.val - 8192); break;
+      case 'sysex':    num = m.bytes.length + ' bytes'; break;
+      case 'unknown':  num = m.bytes.map(b => b.toString(16).padStart(2,'0')).join(' '); break;
+    }
+
+    const labelable = k != null;
+    const rowAttrs = labelable
+      ? ' data-key="' + escapeHtml(k) + '" data-display="' + escapeHtml('ch' + (m.channel || '?') + ' ' + type + (num ? ' ' + num.replace(/<[^>]+>/g,'') : '')) + '"'
+      : '';
+    return '<div class="log-row' + (labelable ? '' : ' unlabelable') + '"' + rowAttrs + '>' +
+      '<span class="lr-time">' + fmtDt(entry.dt) + '</span>' +
+      '<span class="lr-ch">' + ch + '</span>' +
+      '<span class="lr-type">' + type + '</span>' +
+      '<span class="lr-num">' + num + '</span>' +
+      '<span class="lr-label">' + escapeHtml(lbl) + '</span>' +
+      '<span class="lr-val">' + val + '</span>' +
+    '</div>';
+  }).join('');
+
+  els.log.innerHTML = html;
+}
+
+function renderLabelCount() {
+  const n = Object.keys(labels).length;
+  els.labelCount.textContent = n + ' label' + (n === 1 ? '' : 's');
+  els.labelCount.className = 'label-count' + (n > 0 ? ' has' : '');
+}
+
+let renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    // Pause DOM rebuilds while the label editor is open so its focus / typing is never disturbed.
+    if (editingKey) return;
+    renderLabelCount();
+    renderLiveState();
+    renderLog();
+  });
+}
+
+// Periodic ticker for the clock-derived BPM display only — does NOT rebuild the log,
+// so it can't interfere with mid-click row replacement. Throttled to 4Hz.
+setInterval(() => { if (started && !editingKey && clockTimes.length >= 8) scheduleRender(); }, 250);
+
+// ── UI wiring ─────────────────────────────────────────────
+function setupUI() {
+  els.btnStart.addEventListener('click', start);
+  els.btnStop.addEventListener('click', stop);
+  els.btnClear.addEventListener('click', () => { clearAll(); scheduleRender(); });
+  els.btnExport.addEventListener('click', exportProfile);
+  els.btnImport.addEventListener('click', () => els.fileInput.click());
+  els.fileInput.addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (f) importProfile(f);
+    e.target.value = '';
+  });
+
+  els.deviceSelect.addEventListener('change', () => setDeviceById(els.deviceSelect.value));
+  els.deviceName.addEventListener('input', () => { onDeviceNameChange(); scheduleRender(); });
+
+  // Use mousedown so the editor opens before the row can be replaced by the next render.
+  document.body.addEventListener('mousedown', e => {
+    const t = e.target.closest('[data-key]');
+    if (!t || !t.dataset.key) return;
+    e.preventDefault(); // avoid stealing focus from the editor input
+    openEditor(t.dataset.key, t.dataset.display || t.dataset.key);
+  });
+
+  els.editorSave.addEventListener('click', saveLabel);
+  els.editorCancel.addEventListener('click', closeEditor);
+  els.editorDelete.addEventListener('click', deleteLabel);
+  els.editor.addEventListener('click', e => { if (e.target === els.editor) closeEditor(); });
+  els.editorInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveLabel();
+    else if (e.key === 'Escape') closeEditor();
+  });
+}
+
+async function boot() {
+  if (!navigator.requestMIDIAccess) {
+    els.unsupported.style.display = 'block';
+    return;
+  }
+  els.app.style.display = 'flex';
+
+  const lastName = localStorage.getItem(LS_LAST_DEVICE_NAME) || '';
+  if (lastName) {
+    els.deviceName.value = lastName;
+    deviceName = lastName;
+    labels = loadLabels(lastName);
+  }
+
+  setupUI();
+  scheduleRender();
+
+  // Try to acquire MIDI access automatically. If the user has previously granted permission
+  // (or the browser doesn't require a gesture), the device dropdown populates immediately and
+  // we auto-bind to the last-used device. Otherwise the user clicks Start to grant permission.
+  if (await acquireAccess()) {
+    started = true;
+    els.btnStart.disabled = true;
+    els.btnStop.disabled = false;
+    refreshDevices();
+    if (!currentPort) {
+      const ports = connectedInputs();
+      if (ports.length === 0) {
+        setStatus('no MIDI inputs — connect a device', 'error');
+      } else {
+        setStatus('pick a device from the dropdown', '');
+      }
+      // Revert to a non-listening state so user can re-engage via Start
+      started = false;
+      els.btnStart.disabled = false;
+      els.btnStop.disabled = true;
+    }
+  } else {
+    setStatus('click start to grant midi access', '');
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

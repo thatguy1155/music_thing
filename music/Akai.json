@@ -1,0 +1,23 @@
+{
+  "deviceName": "Akai",
+  "labels": {
+    "note-36-ch1": "pad1",
+    "note-37-ch1": "pad2",
+    "note-38-ch1": "pad3",
+    "note-39-ch1": "pad4",
+    "note-40-ch1": "pad5",
+    "note-41-ch1": "pad6",
+    "note-42-ch1": "pad7",
+    "note-43-ch1": "pad8",
+    "cc-1-ch1": "knob1",
+    "cc-2-ch1": "knob2",
+    "cc-3-ch1": "knob3",
+    "cc-4-ch1": "knob4",
+    "cc-5-ch1": "knob5",
+    "cc-6-ch1": "knob6",
+    "cc-7-ch1": "knob7",
+    "cc-8-ch1": "knob8"
+  },
+  "exportedAt": "2026-05-25T18:05:55.318Z",
+  "version": 1
+}
